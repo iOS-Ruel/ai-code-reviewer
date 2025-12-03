@@ -110,6 +110,7 @@ The project mainly uses:
 - 개선할 부분이 전혀 없다면, \`"reviews": []\` 로 빈 배열을 반환합니다.
 - 긍정적인 칭찬 코멘트는 작성하지 않습니다.
 - 코드에 주석을 추가하라고 제안하지 않습니다.
+- 응답은 **코드블럭(\`\`\`) 없이** 순수 JSON 문자열만 반환하세요. 맨 앞과 맨 뒤에 아무 텍스트도 추가하지 마세요.
 
 ## Context
 아래 PR의 제목과 설명은 **맥락 파악용**으로만 사용하고, 실제 코멘트는 반드시 코드 변경 내용(diff)을 기준으로 작성하세요.
@@ -161,13 +162,33 @@ async function getAIResponse(prompt: string): Promise<Array<{
       ],
     });
 
-    const res = response.choices[0].message?.content?.trim() || "{}";
-    return JSON.parse(res).reviews;
+    let raw = response.choices[0].message?.content?.trim() || "{}";
+
+    // 1) ```로 둘러싸인 코드블록이면 제거
+    if (raw.startsWith("```")) {
+      // 맨 앞 ```json 또는 ``` 제거
+      raw = raw.replace(/^```[a-zA-Z0-9]*\n/, "");
+      // 맨 뒤 ``` 제거
+      raw = raw.replace(/```$/, "").trim();
+    }
+
+    // 2) 혹시 이상한 텍스트가 섞여 있으면, 첫 { 부터 마지막 } 까지만 자르기
+    const firstBrace = raw.indexOf("{");
+    const lastBrace = raw.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      raw = raw.slice(firstBrace, lastBrace + 1);
+    }
+
+    const parsed = JSON.parse(raw);
+
+    // reviews가 없으면 빈 배열 반환
+    return parsed.reviews || [];
   } catch (error) {
-    console.error("Error:", error);
+    console.error("Error while parsing AI response:", error);
     return null;
   }
 }
+
 
 function createComment(
   file: File,
