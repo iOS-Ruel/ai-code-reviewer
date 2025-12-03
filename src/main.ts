@@ -135,10 +135,12 @@ ${chunk.changes
 `;
 }
 
-async function getAIResponse(prompt: string): Promise<Array<{
-  lineNumber: string;
-  reviewComment: string;
-}> | null> {
+async function getAIResponse(prompt: string): Promise<
+  Array<{
+    lineNumber: string;
+    reviewComment: string;
+  }> | null
+> {
   const queryConfig = {
     model: OPENAI_API_MODEL,
     temperature: 0.2,
@@ -151,10 +153,8 @@ async function getAIResponse(prompt: string): Promise<Array<{
   try {
     const response = await openai.chat.completions.create({
       ...queryConfig,
-      // return JSON if the model supports it:
-      ...(OPENAI_API_MODEL === "gpt-4-1106-preview"
-        ? { response_format: { type: "json_object" } }
-        : {}),
+      // ✅ 모델 종류 상관 없이 항상 JSON 객체로 받도록 강제
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
@@ -163,26 +163,12 @@ async function getAIResponse(prompt: string): Promise<Array<{
       ],
     });
 
-    let raw = response.choices[0].message?.content?.trim() || "{}";
-
-    // 1) ```로 둘러싸인 코드블록이면 제거
-    if (raw.startsWith("```")) {
-      // 맨 앞 ```json 또는 ``` 제거
-      raw = raw.replace(/^```[a-zA-Z0-9]*\n/, "");
-      // 맨 뒤 ``` 제거
-      raw = raw.replace(/```$/, "").trim();
-    }
-
-    // 2) 혹시 이상한 텍스트가 섞여 있으면, 첫 { 부터 마지막 } 까지만 자르기
-    const firstBrace = raw.indexOf("{");
-    const lastBrace = raw.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace !== -1) {
-      raw = raw.slice(firstBrace, lastBrace + 1);
-    }
+    // OpenAI가 json_object로 반환하면, content는 순수 JSON 문자열입니다.
+    const raw = response.choices[0].message?.content?.trim() || "{}";
 
     const parsed = JSON.parse(raw);
 
-    // reviews가 없으면 빈 배열 반환
+    // reviews가 없으면 빈 배열
     return parsed.reviews || [];
   } catch (error) {
     console.error("Error while parsing AI response:", error);
