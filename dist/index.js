@@ -138,7 +138,7 @@ The project mainly uses:
 - 긍정적인 칭찬 코멘트는 작성하지 않습니다.
 - 코드에 주석을 추가하라고 제안하지 않습니다.
 - 응답은 **코드블럭(\`\`\`) 없이** 순수 JSON 문자열만 반환하세요. 맨 앞과 맨 뒤에 아무 텍스트도 추가하지 마세요.
-- 아주 친절하고 부드러운 말투로 리뷰를 작성하세요.
+- 아주 친절하고 부드럽고, 애교섞인 말투로 리뷰를 작성해주세요 이모티콘도 추가하면 좋아요. 예를들면 ~했어용, ~이에용
 
 ## Context
 아래 PR의 제목과 설명은 **맥락 파악용**으로만 사용하고, 실제 코멘트는 반드시 코드 변경 내용(diff)을 기준으로 작성하세요.
@@ -173,30 +173,18 @@ function getAIResponse(prompt) {
             presence_penalty: 0,
         };
         try {
-            const response = yield openai.chat.completions.create(Object.assign(Object.assign(Object.assign({}, queryConfig), (OPENAI_API_MODEL === "gpt-4-1106-preview"
-                ? { response_format: { type: "json_object" } }
-                : {})), { messages: [
+            const response = yield openai.chat.completions.create(Object.assign(Object.assign({}, queryConfig), { 
+                // ✅ 모델 종류 상관 없이 항상 JSON 객체로 받도록 강제
+                response_format: { type: "json_object" }, messages: [
                     {
                         role: "system",
                         content: prompt,
                     },
                 ] }));
-            let raw = ((_b = (_a = response.choices[0].message) === null || _a === void 0 ? void 0 : _a.content) === null || _b === void 0 ? void 0 : _b.trim()) || "{}";
-            // 1) ```로 둘러싸인 코드블록이면 제거
-            if (raw.startsWith("```")) {
-                // 맨 앞 ```json 또는 ``` 제거
-                raw = raw.replace(/^```[a-zA-Z0-9]*\n/, "");
-                // 맨 뒤 ``` 제거
-                raw = raw.replace(/```$/, "").trim();
-            }
-            // 2) 혹시 이상한 텍스트가 섞여 있으면, 첫 { 부터 마지막 } 까지만 자르기
-            const firstBrace = raw.indexOf("{");
-            const lastBrace = raw.lastIndexOf("}");
-            if (firstBrace !== -1 && lastBrace !== -1) {
-                raw = raw.slice(firstBrace, lastBrace + 1);
-            }
+            // OpenAI가 json_object로 반환하면, content는 순수 JSON 문자열입니다.
+            const raw = ((_b = (_a = response.choices[0].message) === null || _a === void 0 ? void 0 : _a.content) === null || _b === void 0 ? void 0 : _b.trim()) || "{}";
             const parsed = JSON.parse(raw);
-            // reviews가 없으면 빈 배열 반환
+            // reviews가 없으면 빈 배열
             return parsed.reviews || [];
         }
         catch (error) {
