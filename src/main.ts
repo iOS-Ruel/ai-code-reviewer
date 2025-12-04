@@ -4,10 +4,12 @@ import OpenAI from "openai";
 import { Octokit } from "@octokit/rest";
 import parseDiff, { Chunk, File } from "parse-diff";
 import minimatch from "minimatch";
+import https from "https"; 
 
 const GITHUB_TOKEN: string = core.getInput("GITHUB_TOKEN");
 const OPENAI_API_KEY: string = core.getInput("OPENAI_API_KEY");
 const OPENAI_API_MODEL: string = core.getInput("OPENAI_API_MODEL");
+const SLACK_WEBHOOK_URL: string = core.getInput("SLACK_WEBHOOK_URL");
 
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
 
