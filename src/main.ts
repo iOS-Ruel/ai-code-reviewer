@@ -4,12 +4,13 @@ import OpenAI from "openai";
 import { Octokit } from "@octokit/rest";
 import parseDiff, { Chunk, File } from "parse-diff";
 import minimatch from "minimatch";
-import https from "https"; 
+import * as https from "https"; // ✅ Node 16 환경용 HTTPS 모듈
 
+// ====== GitHub Action Inputs ======
 const GITHUB_TOKEN: string = core.getInput("GITHUB_TOKEN");
 const OPENAI_API_KEY: string = core.getInput("OPENAI_API_KEY");
 const OPENAI_API_MODEL: string = core.getInput("OPENAI_API_MODEL");
-const SLACK_WEBHOOK_URL: string = core.getInput("SLACK_WEBHOOK_URL");
+const SLACK_WEBHOOK_URL: string = core.getInput("SLACK_WEBHOOK_URL"); // ✅ Slack Webhook 입력
 
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
 
@@ -17,14 +18,19 @@ const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
 });
 
+// ====== Types ======
 interface PRDetails {
   owner: string;
   repo: string;
   pull_number: number;
   title: string;
   description: string;
+  url: string; // ✅ Slack에서 링크로 사용
 }
 
+type ReviewComment = { body: string; path: string; line: number };
+
+// ====== GitHub PR 관련 함수 ======
 async function getPRDetails(): Promise<PRDetails> {
   const { repository, number } = JSON.parse(
     readFileSync(process.env.GITHUB_EVENT_PATH || "", "utf8")
@@ -40,6 +46,7 @@ async function getPRDetails(): Promise<PRDetails> {
     pull_number: number,
     title: prResponse.data.title ?? "",
     description: prResponse.data.body ?? "",
+    url: prResponse.data.html_url ?? "",
   };
 }
 
@@ -58,11 +65,12 @@ async function getDiff(
   return response.data;
 }
 
+// ====== 메인 분석 로직 ======
 async function analyzeCode(
   parsedDiff: File[],
   prDetails: PRDetails
-): Promise<Array<{ body: string; path: string; line: number }>> {
-  const comments: Array<{ body: string; path: string; line: number }> = [];
+): Promise<Array<ReviewComment>> {
+  const comments: Array<ReviewComment> = [];
 
   for (const file of parsedDiff) {
     if (file.to === "/dev/null") continue; // Ignore deleted files
@@ -80,6 +88,7 @@ async function analyzeCode(
   return comments;
 }
 
+// ====== 프롬프트 생성 ======
 function createPrompt(file: File, chunk: Chunk, prDetails: PRDetails): string {
   return `
 당신은 시니어 iOS 개발자이자 코드 리뷰어입니다.
@@ -133,6 +142,7 @@ ${chunk.changes
 `;
 }
 
+// ====== OpenAI 호출 + JSON 파싱 ======
 async function getAIResponse(prompt: string): Promise<
   Array<{
     lineNumber: string;
@@ -151,7 +161,7 @@ async function getAIResponse(prompt: string): Promise<
   try {
     const response = await openai.chat.completions.create({
       ...queryConfig,
-      // ✅ 모델 종류 상관 없이 항상 JSON 객체로 받도록 강제
+      // ✅ 항상 JSON 객체로 받도록 강제
       response_format: { type: "json_object" },
       messages: [
         {
@@ -161,12 +171,9 @@ async function getAIResponse(prompt: string): Promise<
       ],
     });
 
-    // OpenAI가 json_object로 반환하면, content는 순수 JSON 문자열입니다.
     const raw = response.choices[0].message?.content?.trim() || "{}";
-
     const parsed = JSON.parse(raw);
 
-    // reviews가 없으면 빈 배열
     return parsed.reviews || [];
   } catch (error) {
     console.error("Error while parsing AI response:", error);
@@ -174,7 +181,7 @@ async function getAIResponse(prompt: string): Promise<
   }
 }
 
-
+// ====== GitHub Review Comment 생성 ======
 function createComment(
   file: File,
   chunk: Chunk,
@@ -182,7 +189,7 @@ function createComment(
     lineNumber: string;
     reviewComment: string;
   }>
-): Array<{ body: string; path: string; line: number }> {
+): Array<ReviewComment> {
   return aiResponses.flatMap((aiResponse) => {
     if (!file.to) {
       return [];
@@ -199,7 +206,7 @@ async function createReviewComment(
   owner: string,
   repo: string,
   pull_number: number,
-  comments: Array<{ body: string; path: string; line: number }>
+  comments: Array<ReviewComment>
 ): Promise<void> {
   await octokit.pulls.createReview({
     owner,
@@ -210,6 +217,93 @@ async function createReviewComment(
   });
 }
 
+// ====== Slack 전송 유틸 ======
+function truncate(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength) + "...";
+}
+
+function postToSlack(webhookUrl: string, payload: any): Promise<void> {
+  return new Promise((resolve, reject) => {
+    try {
+      const data = JSON.stringify(payload);
+      const url = new URL(webhookUrl);
+
+      const options: https.RequestOptions = {
+        hostname: url.hostname,
+        path: url.pathname + url.search,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(data),
+        },
+      };
+
+      const req = https.request(options, (res) => {
+        res.on("data", () => {});
+        res.on("end", () => resolve());
+      });
+
+      req.on("error", (error) => {
+        console.error("Error sending Slack message:", error);
+        reject(error);
+      });
+
+      req.write(data);
+      req.end();
+    } catch (error) {
+      console.error("Error building Slack request:", error);
+      reject(error);
+    }
+  });
+}
+
+async function notifySlack(
+  prDetails: PRDetails,
+  comments: ReviewComment[]
+): Promise<void> {
+  if (!SLACK_WEBHOOK_URL) {
+    console.log("SLACK_WEBHOOK_URL is not set. Skipping Slack notification.");
+    return;
+  }
+
+  const baseText =
+    comments.length === 0
+      ? "이번 PR에서는 특별히 지적할 부분은 없었어용 😊"
+      : `이번 PR에 대해 *${comments.length}개*의 리뷰 코멘트가 생성되었어용. 주요 내용 일부만 정리해 드릴게요 🐶`;
+
+  const maxItems = 5;
+  const summarized = comments.slice(0, maxItems).map((c) => {
+    const oneLineBody = c.body.replace(/\n/g, " ");
+    return `• \`${c.path}:${c.line}\` — ${truncate(oneLineBody, 200)}`;
+  });
+
+  const slackText = [baseText, "", ...summarized].join("\n");
+
+  const payload = {
+    text: "AI 코드 리뷰 결과", // fallback
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*AI 코드 리뷰 결과에요 🧁*\n*PR:* <${prDetails.url}|${prDetails.title}>`,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: slackText,
+        },
+      },
+    ],
+  };
+
+  await postToSlack(SLACK_WEBHOOK_URL, payload);
+}
+
+// ====== main ======
 async function main() {
   const prDetails = await getPRDetails();
   let diff: string | null;
@@ -262,6 +356,7 @@ async function main() {
   });
 
   const comments = await analyzeCode(filteredDiff, prDetails);
+
   if (comments.length > 0) {
     await createReviewComment(
       prDetails.owner,
@@ -270,6 +365,9 @@ async function main() {
       comments
     );
   }
+
+  // ✅ 리뷰 결과를 슬랙으로 요약 전송
+  await notifySlack(prDetails, comments);
 }
 
 main().catch((error) => {
